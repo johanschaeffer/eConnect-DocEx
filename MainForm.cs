@@ -3,16 +3,18 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Drawing;
-using System.Linq;
 using System.Text;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
+using System.Xml;
 using EConnectApi.Definitions;
 using EConnectApi.Helpers;
 using System.IO;
 using EConnectDocEx;
 using EConnectDocEx.Properties;
+using System.Text.RegularExpressions;
 
 
 namespace EConnectDocEx
@@ -59,44 +61,64 @@ namespace EConnectDocEx
             Application.DoEvents(); //Force to update the statuslabel
         }
 
-        public Boolean NewFile(string filePath)
+        public Boolean NewFile(string filePathString)
         {
             // File exists
-            if  (File.Exists(filePath) == false) return false;
+            if  (File.Exists(filePathString) == false) return false;
 
-            StatusUpdate("Reading: " + filePath);
-
-            // Well-formed: The XML code must be syntactically correct or the XML parser will raise an error.
+            //// Well-formed: The XML code must be syntactically correct or the XML parser will raise an error.
+            XmlDocument xmlDoc = new XmlDocument();
             try
             {
-                XDocument xd1 = new XDocument();
-                xd1 = XDocument.Load(filePath);
+                var xmlString = File.ReadAllText(filePathString);
+                var xmlFinalString = RemoveNamespaces.RemoveAllNamespaces(xmlString); //Regex.Replace(xmlString, @"<(/?)\w+:(\w+/?)>", "<$1$2>");
+
+                xmlDoc.LoadXml(xmlFinalString);
             }
             catch
             {
-                StatusUpdate("No XML document: " + filePath);
+                StatusUpdate("No XML document: " + filePathString);
                 return false;
             }
-
-            StatusUpdate("Validating: " + filePath + "...");
-
-            // Valid:       If the XML file has an associated XML Schema,
-            //              the elements must appear in the defined structure and the content
-            //              of the individual elements must conform to the declared data types specified in the schema.
-            // *****TODO*****
 
             // File can be added to the grid
             GridTables.FileDoc df = new GridTables.FileDoc();
 
-            FileInfo file = new FileInfo(filePath);
+            FileInfo file = new FileInfo(filePathString);
             df.FileName = file.Name;
-            df.FullFilePath = filePath;
+            df.FullFilePath = filePathString;
             df.FileSize = (file.Length / 1024).ToString() + "kb";
             df.FileCreationDate = file.LastAccessTime;
 
+            // Valid:       If the XML file has an associated XML Schema,
+            //              the elements must appear in the defined structure and the content
+            //              of the individual elements must conform to the declared data types specified in the schema.
+            try
+            {
+                df.InvoiceID = xmlDoc.SelectSingleNode("Invoice/ID").InnerText;
+                df.TotalAmount = xmlDoc.SelectSingleNode("Invoice/LegalMonetaryTotal/PayableAmount").InnerText;
+
+                df.ValidInvoice = false;
+                if ((df.InvoiceID.Equals("") == false) && (df.TotalAmount.Equals("") == false))
+                    df.ValidInvoice = true;
+            }
+            catch
+            {
+                StatusUpdate("No valid XML elements: " + filePathString);
+                return false;
+            }
+
+            // Has PDF primary image file?
+            string pdfFileName = file.DirectoryName + @"\" + Path.GetFileNameWithoutExtension(file.Name) + ".PDF";
+
+            if (File.Exists(pdfFileName) == true)
+                StatusUpdate(String.Format("Primary image (PDF) detected: {0}", pdfFileName));
+            //TODO SAVE and process!
+
+            // Add filedoc to grid
             fileDocTable.Rows.Add(GridTables.makeRow(df, fileDocTable));
 
-            StatusUpdate("Loaded: " + filePath);
+            StatusUpdate("Valid XML document: " + filePathString);
 
             return true;
         }
@@ -113,7 +135,15 @@ namespace EConnectDocEx
                 Startrowrange = string.Empty
             });
 
-            StatusUpdate("Done downloading list of inboxdocuments...");
+            if (APIdocs.Equals(null))
+            {
+                StatusUpdate("Done downloading. There are no inboxdocuments...");
+                return;
+            }
+            else
+            {
+                StatusUpdate(String.Format("Done downloading list of {0} inboxdocuments...", APIdocs.Documents.Count()));
+            }
 
             // Build grid
             foreach (DocumentBase apibasedoc in APIdocs.Documents)
@@ -164,7 +194,16 @@ namespace EConnectDocEx
                 Startrowrange = string.Empty
             });
 
-            StatusUpdate("Done Downloading list of outboxdocuments...");
+            // Check of existing documents
+            if (APIdocs.Equals(null))
+            {
+                StatusUpdate("Done downloading. There are no outboxdocuments...");
+                return;
+            }
+            else
+            {
+                StatusUpdate(String.Format("Done downloading list of {0} outboxdocuments...", APIdocs.DocumentsBase.Count()));
+            }
 
             // Build grid
             foreach (DocumentBase apibasedoc in APIdocs.DocumentsBase)
@@ -205,9 +244,7 @@ namespace EConnectDocEx
             {
                 Boolean Succes = NewFile(path);
                 if (Succes == true)
-                {
                     ValidFiles++;
-                }
             }
             this.dataGridViewFileDocTable.AutoResizeColumns();
 
@@ -236,14 +273,15 @@ namespace EConnectDocEx
                             DocumentTemplateId = "GLDT9223370666504283001RA000000006DTP2000001",
                             Subject = "API exchange test",
                             SendViaGroup = Settings.Default.EntityID,
-                            Recipient = "XCNL10027", //"johanschaeffer@gmail.com",
-                            //RecipientEmailId = "thieme@selmit.nl",
+                            Recipient = "XCNL10201", //"XCNL10027", //"johanschaeffer@gmail.com",
+                            RecipientEmailId = "johanschaeffer@hotmail.com", //"thieme@selmit.nl",
                             Payload = XElement.Parse(System.IO.File.ReadAllText(DocFile)),
                             DocumentAsFile = new DocumentAsFile() { FileContents = "T3JkZXIgRGV0YWlscyBmb3IgUGFydG5lcldvcmxkIExpY2Vuc2U=", FileName = "order.txt" }
                         };
 
-                    StatusUpdate(APIclient.SendDocument(docRequest).ExternalId + " " + APIclient.SendDocument(docRequest).ConsignmentId); 
-                    
+                    StatusUpdate(String.Format("ExternalID: {0}   ConsignmentID: {1}",APIclient.SendDocument(docRequest).ExternalId,APIclient.SendDocument(docRequest).ConsignmentId)); 
+
+                    // TODO ARCHIVE!
                 }
                 StatusUpdate("Done sending...");
             }
@@ -251,7 +289,14 @@ namespace EConnectDocEx
 
         private void buttonSelectAllValid_Click(object sender, EventArgs e)
         {
-            this.dataGridViewFileDocTable.SelectAll();
+            
+            foreach (DataGridViewRow dgRow in this.dataGridViewFileDocTable.Rows)
+            {
+                if (dgRow.Cells["ValidInvoice"].Value.Equals(true) == true)
+                    dgRow.Selected = true;
+                else
+                    dgRow.Selected = false;             
+            }
         }
 
         private void buttonInboxRefresh_Click(object sender, EventArgs e)
@@ -306,85 +351,32 @@ namespace EConnectDocEx
             LoadOutboxDocuments();
         }
 
+        private void dataGridViewOutboxDocTable_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            //StatusUpdate("Connecting...");
+            //foreach (DataGridViewRow row in this.dataGridViewFileDocTable.SelectedRows)
+            //{
+            //    string DocFile = row.Cells["FullFilePath"].Value.ToString();
 
+            //    StatusUpdate("Downloading payload: " + DocFile);
+
+            //    var docRequest = new SendDocument()
+            //    {
+            //        DocumentTemplateId = "GLDT9223370666504283001RA000000006DTP2000001",
+            //        Subject = "API exchange test",
+            //        SendViaGroup = Settings.Default.EntityID,
+            //        Recipient = "XCNL10201", //"XCNL10027", //"johanschaeffer@gmail.com",
+            //        RecipientEmailId = "johanschaeffer@hotmail.com", //"thieme@selmit.nl",
+            //        Payload = XElement.Parse(System.IO.File.ReadAllText(DocFile)),
+            //        DocumentAsFile = new DocumentAsFile() { FileContents = "T3JkZXIgRGV0YWlscyBmb3IgUGFydG5lcldvcmxkIExpY2Vuc2U=", FileName = "order.txt" }
+            //    };
+
+            //    StatusUpdate(String.Format("ExternalID: {0}   ConsignmentID: {1}", APIclient.SendDocument(docRequest).ExternalId, APIclient.SendDocument(docRequest).ConsignmentId));
+
+            //}
+            //StatusUpdate("Done downloading payload...");
+        }
 
     }
    
 }
-
-
-
-//var doc = new SendDocument()
-//{
-//    DocumentTemplateId = "GLDT9223370666504283001RA000000006DTP2000001",
-//    Subject = "Afas test factuur",
-//    Recipient = "thieme@selmit.nl",
-//    RecipientEmailId = "thieme@selmit.nl",
-//    Payload = XElement.Parse(System.IO.File.ReadAllText(@"E:\eVerbinding app\Test files\UBLWITHATTACHEMENT.txt")),
-//    DocumentAsFile = new DocumentAsFile() { FileContents = "T3JkZXIgRGV0YWlscyBmb3IgUGFydG5lcldvcmxkIExpY2Vuc2U=", FileName = "order.txt" }
-//};
-//var res = ApiProxy.SendDocument(doc, "thieme@selmit.nl");
-//MessageBox.Show(res.ConsignmentId);
-//// TODO:
-//var docs = ApiProxy.GetDocuments(new GetDocuments() { GroupId = "XGI11384895851735740", Limit = 10, Startrowrange = 0}, "thieme@selmit.nl");
-//return;
-
-
-//MessageBox.Show("Verbinding maken met eVerbinding...");
-//var oAuthUtils = new OAuthConsumer();
-//SignatureMethod SigningProvider = SignatureMethod.HMACSHA1;
-
-// Requesting request token
-//var RequestToken = oAuthUtils.GetOAuthRequestToken(
-//                                    Settings.Default.EndPointRequestToken,
-//                                    Settings.Default.Realm,
-//                                    Settings.Default.OAUThAppKey,
-//                                    Settings.Default.OAUThSecret,
-//                                    "Unused",
-//                                    "SEND_DOC",
-//                                    SigningProvider);
-//// Opslaan in debug tabs
-////eConnect_DocEx.MainForm.textBoxLog.Text = 'dd';
-
-//// Requesting access token using request token
-//var AccessToken = oAuthUtils.GetOAuthAccessToken(
-//                                    Settings.Default.EndPointAccessToken,
-//                                    Settings.Default.Realm,
-//                                    Settings.Default.OAUThAppKey,
-//                                    Settings.Default.OAUThSecret,
-//                                    RequestToken.Token.ToString(),
-//                                    "Unused",
-//                                    RequestToken.TokenSecret.ToString(),
-//                                    "SEND_DOC",
-//                                    SigningProvider);
-
-
-// Opslaan in debug tabs
-
-
-// This must be filtered out of the payload: <?xml version="1.0" encoding="UTF-8"?>
-
-// Invoice DocumentTemplateId: GLDT9223370666504283001RA000000006DTP2000001
-// Simpele tekst DocumentTemplateId: GLDT9223370666592418249RA000000001DTP3000002
-
-// Sending document using access token
-//string payload =
-//    "<SOAP:Envelope xmlns:SOAP=\"http://schemas.xmlsoap.org/soap/envelope/\">"
-//    + "<SOAP:Body>"
-//    + "<SendDocument xmlns=\"http://ws.vg.pw.com/external/1.0\">"
-//    + "<DocumentTemplateId>GLDT9223370666504283001RA000000006DTP2000001</DocumentTemplateId>"
-//    + "<Subject>Afas test factuur</Subject>"
-//    + "<Recipient>thieme@selmit.nl</Recipient>"
-//    // Document As File = de representatie van het document
-//    + "<DocumentAsFile fileName=\"order.txt\">T3JkZXIgRGV0YWlscyBmb3IgUGFydG5lcldvcmxkIExpY2Vuc2U=</DocumentAsFile>"
-//    + "<RecipientEmailId>thieme@selmit.nl</RecipientEmailId>"
-//    //+ "<SendViaGroup>XCNL10027</SendViaGroup>"
-//    + "<Payload>"
-//    //  + System.IO.File.ReadAllText(@"E:\eVerbinding app\Test files\Abonnementsfactuur V2705714 - kopie.ubl")
-//         + System.IO.File.ReadAllText(@"C:\Users\Thieme\Documents\SelmIT\eVerbinding\ExampleApp\Test files\UBLWITHATTACHEMENT.txt")
-//    //+ System.IO.File.ReadAllText(@"E:\eVerbinding app\Test files\Factureren Factuur 10000 20130052 (2013-10-31 10-42-21)_000.xml")
-//    + "</Payload>"
-//    + "</SendDocument></SOAP:Body></SOAP:Envelope>";
-//var result = oAuthUtils.send("https://platform.everbinding.nl/api/accessresource", "platform.everbinding.nl", Settings.Default.OAUThAppKey, Settings.Default.OAUThSecret, AccessToken.Token.ToString(), AccessToken.TokenSecret.ToString(), "SEND_DOC", payload, "thieme@selmit.nl", SigningProvider);
-
-//MessageBox.Show("Done. Result: " + result);

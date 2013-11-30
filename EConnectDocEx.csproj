@@ -80,6 +80,7 @@
     <Compile Include="APIclient.cs" />
     <Compile Include="GridTables.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="RemoveAllNamespaces.cs" />
     <Compile Include="SettingsForm.cs">
       <SubType>Form</SubType>
     </Compile>
